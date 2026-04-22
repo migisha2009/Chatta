@@ -1,10 +1,10 @@
 {
   "name": "chatta",
   "version": "1.0.0",
+  "main": "index.js",
   "scripts": {
-    "build": "npm run build --prefix client",
-    "start": "npm start --prefix server",
-    "dev": "concurrently \"npm run dev --prefix client\" \"npm run dev --prefix server\""
+    "start": "node index.js",
+    "build": "npm install --prefix client && npm run build --prefix client"
   },
   "engines": { "node": ">=18" }
 }
