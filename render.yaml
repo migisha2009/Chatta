@@ -22,8 +22,8 @@ services:
     name: chatta-client
     runtime: static
     plan: free
-    rootDir: client/dist
-    buildCommand: "cd client && npm install && npm run build"
+    rootDir: client
+    buildCommand: "npm install && npm run build"
     buildFolder: dist
     envVars:
       - key: VITE_SOCKET_URL
