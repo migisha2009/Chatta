@@ -1,35 +1,22 @@
 services:
-  # Node.js Backend Service
   - type: web
     name: chatta-server
     runtime: node
-    plan: free
-    env: node
     rootDir: server
-    buildCommand: "npm install"
-    startCommand: "npm start"
+    buildCommand: npm install
+    startCommand: node index.js
     envVars:
-      - key: NODE_ENV
-        value: production
       - key: PORT
-        value: 10000
+        value: 5000
       - key: CLIENT_URL
         value: https://chatta-client.onrender.com
-    healthCheckPath: /api/rooms
 
-  # React Frontend Static Site
-  - type: web
+  - type: static
     name: chatta-client
-    runtime: node
-    plan: free
     rootDir: client
-    buildCommand: "npm ci && npm run build"
-    startCommand: "npm run preview"
-    buildFolder: dist
-    envVars:
-      - key: VITE_SOCKET_URL
-        value: https://chatta-server.onrender.com
-      - key: NODE_ENV
-        value: production
-      - key: PORT
-        value: 10000
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
