@@ -13,6 +13,7 @@ const { body, validationResult } = require('express-validator');
 const User = require('./models/User');
 const userStore = require('./auth/userStore');
 const { authenticateToken, authenticateSocket, generateToken } = require('./middleware/auth');
+const ChattaBot = require('./services/chattaBot');
 const {
   initializeDatabase,
   createUser,
@@ -32,7 +33,9 @@ const {
   isMemberOfRoom,
   getActiveRoomsWithUserCounts,
   getRoomUsersForAPI,
-  ensureRoomExists
+  ensureRoomExists,
+  searchMessages,
+  getSearchSuggestions
 } = require('./database');
 
 const app = express();
@@ -114,6 +117,9 @@ const messageReactions = {};
 
 // Rate limiting: track messages per socket
 const rateLimitMap = new Map(); // socketId -> { count: number, resetTime: number }
+
+// Initialize ChattaBot
+const chattaBot = new ChattaBot();
 
 // Message sanitization function
 const sanitizeMessage = (text) => {
@@ -385,6 +391,36 @@ io.on('connection', (socket) => {
       
       // Broadcast to room
       io.to(user.room).emit('message', message);
+      
+      // Check for @ChattaBot mention and generate AI response
+      if (sanitizedText.includes('@ChattaBot')) {
+        // Get room context for AI
+        const roomMessages = getLatestMessages(user.roomId, 10);
+        const botResponse = await chattaBot.processMessage(sanitizedText, roomMessages, user);
+        
+        if (botResponse) {
+          // Save bot message to database
+          const savedBotMessage = saveMessage({
+            room_id: user.roomId,
+            user_id: null, // Bot messages don't have a user_id
+            text: botResponse.text,
+            type: 'bot',
+            username: botResponse.username
+          });
+          
+          // Broadcast bot response
+          setTimeout(() => {
+            io.to(user.room).emit('message', {
+              id: savedBotMessage.id,
+              username: botResponse.username,
+              text: botResponse.text,
+              time: botResponse.time,
+              isAI: true,
+              avatar: botResponse.avatar
+            });
+          }, 1000); // 1 second delay for natural conversation flow
+        }
+      }
     } catch (error) {
       console.error('Error sending message:', error);
       socket.emit('error', { message: 'Failed to send message' });
@@ -935,6 +971,90 @@ const fileUpload = multer({
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB per file
     files: 5 // Maximum 5 files
+  }
+});
+
+// GET /api/search - search messages across all rooms
+app.get('/api/search', (req, res) => {
+  try {
+    const { q: query, roomId, limit = 20, offset = 0 } = req.query;
+    
+    if (!query || query.trim().length === 0) {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+    
+    const results = searchMessages(query.trim(), roomId, parseInt(limit), parseInt(offset));
+    
+    res.json({
+      query: query.trim(),
+      results: results.map(msg => ({
+        id: msg.id,
+        roomId: msg.room_id,
+        username: msg.username,
+        text: msg.text,
+        highlightedText: msg.highlighted_text,
+        time: new Date(msg.created_at * 1000).toLocaleString(),
+        rank: msg.rank
+      })),
+      hasMore: results.length === parseInt(limit),
+      total: results.length
+    });
+  } catch (error) {
+    console.error('Search error:', error);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
+// GET /api/search/suggestions - get search suggestions
+app.get('/api/search/suggestions', (req, res) => {
+  try {
+    const { q: query, limit = 10 } = req.query;
+    
+    if (!query || query.trim().length === 0) {
+      return res.json({ suggestions: [] });
+    }
+    
+    const suggestions = getSearchSuggestions(query.trim(), parseInt(limit));
+    
+    res.json({
+      suggestions: suggestions.map(s => s.suggestion)
+    });
+  } catch (error) {
+    console.error('Suggestions error:', error);
+    res.status(500).json({ error: 'Failed to get suggestions' });
+  }
+});
+
+// POST /api/rooms/:roomId/summarize - get AI summary of room
+app.post('/api/rooms/:roomId/summarize', async (req, res) => {
+  try {
+    const roomId = req.params.roomId;
+    const { limit = 50 } = req.body;
+    
+    if (!roomId || roomId.trim().length === 0) {
+      return res.status(400).json({ error: 'Room ID is required' });
+    }
+    
+    // Get recent messages for summarization
+    const messages = getLatestMessages(roomId, limit);
+    
+    if (messages.length === 0) {
+      return res.json({ summary: "No messages to summarize yet. Start the conversation! 📝" });
+    }
+    
+    const summary = await chattaBot.summarizeRoom(messages);
+    
+    res.json({ 
+      summary,
+      messageCount: messages.length,
+      timeRange: {
+        oldest: new Date(messages[0].created_at * 1000).toLocaleString(),
+        newest: new Date(messages[messages.length - 1].created_at * 1000).toLocaleString()
+      }
+    });
+  } catch (error) {
+    console.error('Error summarizing room:', error);
+    res.status(500).json({ error: 'Failed to generate summary' });
   }
 });
 

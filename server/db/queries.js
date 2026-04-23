@@ -210,6 +210,185 @@ const getRoomUsersForAPI = (roomName) => {
   return stmt.all(roomName);
 };
 
+// Search functions
+const searchMessages = (query, roomId = null, limit = 50, offset = 0) => {
+  let whereClause = 'messages_fts MATCH ?';
+  let params = [query];
+  
+  if (roomId) {
+    whereClause += ' AND room_id = ?';
+    params.push(roomId);
+  }
+  
+  const stmt = db.prepare(`
+    SELECT 
+      messages_fts.message_id as id,
+      messages_fts.room_id,
+      messages_fts.username,
+      messages_fts.text,
+      messages_fts.created_at,
+      snippet(messages_fts, 2, '<mark>', '</mark>', '...', 32) as highlighted_text,
+      rank
+    FROM messages_fts
+    WHERE ${whereClause}
+    ORDER BY rank
+    LIMIT ? OFFSET ?
+  `);
+  
+  return stmt.all(...params, limit, offset);
+};
+
+const getSearchSuggestions = (query, limit = 10) => {
+  const stmt = db.prepare(`
+    SELECT DISTINCT 
+      substr(text, 1, 50) as suggestion,
+      count(*) as frequency
+    FROM messages_fts
+    WHERE messages_fts MATCH ? || '*'
+    GROUP BY substr(text, 1, 50)
+    ORDER BY frequency DESC
+    LIMIT ?
+  `);
+  
+  return stmt.all(query, limit);
+};
+
+// Role management functions
+const setUserRole = (roomId, userId, role, grantedBy) => {
+  const stmt = db.prepare(`
+    INSERT OR REPLACE INTO room_roles (id, room_id, user_id, role, granted_by, granted_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  
+  return stmt.run(uuidv4(), roomId, userId, role, grantedBy, Date.now());
+};
+
+const getUserRole = (roomId, userId) => {
+  const stmt = db.prepare('SELECT * FROM room_roles WHERE room_id = ? AND user_id = ?');
+  return stmt.get(roomId, userId);
+};
+
+const getRoomRoles = (roomId) => {
+  const stmt = db.prepare(`
+    SELECT rr.*, u.username 
+    FROM room_roles rr
+    JOIN users u ON rr.user_id = u.id
+    WHERE rr.room_id = ?
+    ORDER BY 
+      CASE rr.role 
+        WHEN 'owner' THEN 1 
+        WHEN 'admin' THEN 2 
+        WHEN 'member' THEN 3 
+      END,
+      rr.granted_at ASC
+  `);
+  return stmt.all(roomId);
+};
+
+const removeUserRole = (roomId, userId) => {
+  const stmt = db.prepare('DELETE FROM room_roles WHERE room_id = ? AND user_id = ?');
+  return stmt.run(roomId, userId);
+};
+
+// Moderation functions
+const banUser = (roomId, userId, bannedBy, reason, expiresAt = null) => {
+  const stmt = db.prepare(`
+    INSERT INTO banned_users (id, room_id, user_id, banned_by, reason, banned_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  
+  return stmt.run(uuidv4(), roomId, userId, bannedBy, reason, Date.now(), expiresAt);
+};
+
+const unbanUser = (roomId, userId) => {
+  const stmt = db.prepare('DELETE FROM banned_users WHERE room_id = ? AND user_id = ?');
+  return stmt.run(roomId, userId);
+};
+
+const isUserBanned = (roomId, userId) => {
+  const stmt = db.prepare(`
+    SELECT * FROM banned_users 
+    WHERE room_id = ? AND user_id = ? 
+    AND (expires_at IS NULL OR expires_at > ?)
+  `);
+  return stmt.get(roomId, userId, Date.now());
+};
+
+const editMessage = (messageId, newText, editedBy) => {
+  const db = require('./database');
+  
+  // Get original message
+  const original = db.prepare('SELECT * FROM messages WHERE id = ?').get(messageId);
+  if (!original) return null;
+  
+  // Record edit history
+  const historyStmt = db.prepare(`
+    INSERT INTO message_edits (id, message_id, original_text, edited_by, edited_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  historyStmt.run(uuidv4(), messageId, original.text, editedBy, Date.now());
+  
+  // Update message
+  const updateStmt = db.prepare('UPDATE messages SET text = ? WHERE id = ?');
+  return updateStmt.run(newText, messageId);
+};
+
+const deleteMessage = (messageId, deletedBy) => {
+  const db = require('./database');
+  
+  // Soft delete by marking as deleted
+  const stmt = db.prepare('UPDATE messages SET text = "[Message deleted]", type = "deleted" WHERE id = ?');
+  return stmt.run(messageId);
+};
+
+const reportMessage = (messageId, reporterId, reason) => {
+  const stmt = db.prepare(`
+    INSERT INTO message_reports (id, message_id, reporter_id, reason, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+  
+  return stmt.run(uuidv4(), messageId, reporterId, reason, Date.now());
+};
+
+const getMessageReports = (roomId = null, status = null) => {
+  let query = `
+    SELECT mr.*, m.text as message_text, m.room_id, 
+           reporter.username as reporter_name,
+           reported.username as reported_name
+    FROM message_reports mr
+    JOIN messages m ON mr.message_id = m.id
+    JOIN users reporter ON mr.reporter_id = reporter.id
+    JOIN users reported ON m.user_id = reported.id
+  `;
+  
+  let params = [];
+  
+  if (roomId) {
+    query += ' WHERE m.room_id = ?';
+    params.push(roomId);
+  }
+  
+  if (status) {
+    query += roomId ? ' AND mr.status = ?' : ' WHERE mr.status = ?';
+    params.push(status);
+  }
+  
+  query += ' ORDER BY mr.created_at DESC';
+  
+  const stmt = db.prepare(query);
+  return stmt.all(...params);
+};
+
+const updateReportStatus = (reportId, status, reviewedBy) => {
+  const stmt = db.prepare(`
+    UPDATE message_reports 
+    SET status = ?, reviewed_by = ?, reviewed_at = ?
+    WHERE id = ?
+  `);
+  
+  return stmt.run(status, reviewedBy, Date.now(), reportId);
+};
+
 module.exports = {
   // User operations
   createUser,
@@ -227,6 +406,26 @@ module.exports = {
   saveMessage,
   getMessages,
   getLatestMessages,
+  
+  // Search operations
+  searchMessages,
+  getSearchSuggestions,
+  
+  // Role operations
+  setUserRole,
+  getUserRole,
+  getRoomRoles,
+  removeUserRole,
+  
+  // Moderation operations
+  banUser,
+  unbanUser,
+  isUserBanned,
+  editMessage,
+  deleteMessage,
+  reportMessage,
+  getMessageReports,
+  updateReportStatus,
   
   // Room member operations
   addMember,
