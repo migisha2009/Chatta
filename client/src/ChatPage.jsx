@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import io from 'socket.io-client';
 import DarkModeToggle from './components/DarkModeToggle';
+import MessageList from './components/MessageList';
+import ThreadPanel from './components/ThreadPanel';
+import { useAuth } from './contexts/AuthContext';
 
 const ChatPage = () => {
-  const [socket, setSocket] = useState(null);
-  const [user, setUser] = useState(null);
+  const { user, socket, isConnected, logout } = useAuth();
   const [currentRoom, setCurrentRoom] = useState('');
   const [messages, setMessages] = useState([]);
   const [rooms, setRooms] = useState([]);
@@ -20,11 +21,22 @@ const ChatPage = () => {
   const [typingUsers, setTypingUsers] = useState([]);
   const [unreadCounts, setUnreadCounts] = useState({});
   const [isTabFocused, setIsTabFocused] = useState(true);
-  const [isConnected, setIsConnected] = useState(false);
   const [isConnecting, setIsConnecting] = useState(true);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connecting', 'connected', 'disconnected', 'reconnecting'
   const [rateLimited, setRateLimited] = useState(false);
   const [rateLimitMessage, setRateLimitMessage] = useState('');
+  const [userProfiles, setUserProfiles] = useState({});
+  
+  // Thread state
+  const [showThreadPanel, setShowThreadPanel] = useState(false);
+  const [selectedThreadMessage, setSelectedThreadMessage] = useState(null);
+  const [threadMessages, setThreadMessages] = useState([]);
+  
+  // Pagination state
+  const [hasMore, setHasMore] = useState(true);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [currentRoomId, setCurrentRoomId] = useState(null);
   
   const messagesEndRef = useRef(null);
   const navigate = useNavigate();
@@ -101,75 +113,24 @@ const ChatPage = () => {
     }
   }, []);
   
-  // Initialize socket and user data
+  // Initialize user data and socket events
   useEffect(() => {
-    const userData = localStorage.getItem('chatUser');
-    if (!userData) {
+    if (!user) {
       navigate('/');
       return;
     }
     
-    const parsedUser = JSON.parse(userData);
-    setUser(parsedUser);
-    setCurrentRoom(parsedUser.room);
+    setCurrentRoom(user.room);
+    setCurrentRoomId(user.room);
+    setIsConnecting(false);
     
-    // Initialize socket with reconnection settings
-    const socketUrl = import.meta.env.VITE_SOCKET_URL || 'http://localhost:5000';
-    const newSocket = io(socketUrl, {
-      reconnection: true,
-      reconnectionAttempts: 5,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000
-    });
-    
-    setSocket(newSocket);
-    
-    // Connection status handlers
-    newSocket.on('connect', () => {
-      console.log('Connected to server');
-      setIsConnected(true);
-      setIsConnecting(false);
-      setConnectionStatus('connected');
-      setRateLimited(false);
-      
-      // Join initial room
-      newSocket.emit('joinRoom', { username: parsedUser.username, room: parsedUser.room });
-      
-      // Show connected toast
-      if (connectionStatus !== 'connecting') {
-        // Show connected notification
-        if ('Notification' in window && Notification.permission === 'granted') {
-          new Notification('Reconnected', {
-            body: 'Successfully reconnected to chat server',
-            icon: '/favicon.ico'
-          });
-        }
+    if (socket) {
+      // Join initial room when socket connects
+      if (isConnected) {
+        socket.emit('joinRoom', { room: user.room });
       }
-    });
-    
-    newSocket.on('disconnect', () => {
-      console.log('Disconnected from server');
-      setIsConnected(false);
-      setConnectionStatus('disconnected');
-    });
-    
-    newSocket.on('reconnecting', (attemptNumber) => {
-      console.log(`Reconnecting... Attempt ${attemptNumber}`);
-      setIsConnecting(true);
-      setConnectionStatus('reconnecting');
-    });
-    
-    newSocket.on('reconnect_failed', () => {
-      console.log('Failed to reconnect');
-      setIsConnecting(false);
-      setConnectionStatus('disconnected');
-    });
-    
-    return () => {
-      newSocket.disconnect();
-    };
-  }, [navigate, connectionStatus]);
+    }
+  }, [user, socket, isConnected, navigate]);
   
   // Socket event handlers
   useEffect(() => {
@@ -207,13 +168,17 @@ const ChatPage = () => {
       }
     });
 
-    socket.on('messageHistory', ({ room, messages: historyMessages }) => {
+    socket.on('messageHistory', ({ room, messages: historyMessages, hasMore: historyHasMore, nextCursor: historyNextCursor }) => {
       // Load stored messages from localStorage
       const storedMessages = loadMessagesFromStorage(room);
       
       // Combine server history with stored messages, deduplicate
       const allMessages = deduplicateMessages(historyMessages, storedMessages);
       const storedOnly = deduplicateMessages(storedMessages, historyMessages);
+      
+      // Set pagination state
+      setHasMore(historyHasMore || false);
+      setNextCursor(historyNextCursor || null);
       
       // Add divider if we have stored messages
       if (storedOnly.length > 0) {
@@ -278,6 +243,31 @@ const ChatPage = () => {
       console.error('Socket error:', data);
     });
     
+    socket.on('profileUpdate', (data) => {
+      console.log('Profile update received:', data);
+      setUserProfiles(prev => ({
+        ...prev,
+        [data.profile.username]: data.profile
+      }));
+    });
+    
+    // Reaction event handler
+    socket.on('reactionUpdated', ({ messageId, reactions }) => {
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, reactions } : msg
+      ));
+    });
+    
+    // Thread message handler
+    socket.on('threadMessage', (message) => {
+      setThreadMessages(prev => [...prev, message]);
+    });
+    
+    // Thread history handler
+    socket.on('threadHistory', ({ messages }) => {
+      setThreadMessages(messages);
+    });
+    
     return () => {
       socket.off('message');
       socket.off('messageHistory');
@@ -287,6 +277,10 @@ const ChatPage = () => {
       socket.off('userStoppedTyping');
       socket.off('rateLimited');
       socket.off('error');
+      socket.off('profileUpdate');
+      socket.off('reactionUpdated');
+      socket.off('threadMessage');
+      socket.off('threadHistory');
     };
   }, [socket, user, currentRoom, isTabFocused]);
   
@@ -320,11 +314,34 @@ const ChatPage = () => {
     }
   };
   
+  const handleReaction = (messageId, emoji) => {
+    if (socket) {
+      socket.emit('react', { messageId, emoji });
+    }
+  };
+  
+  const handleReply = (message) => {
+    setSelectedThreadMessage(message);
+    setShowThreadPanel(true);
+    setThreadMessages([]);
+  };
+  
+  const handleCloseThreadPanel = () => {
+    setShowThreadPanel(false);
+    setSelectedThreadMessage(null);
+    setThreadMessages([]);
+  };
+  
   const switchRoom = (roomName) => {
     if (socket && user) {
-      socket.emit('joinRoom', { username: user.username, room: roomName });
+      socket.emit('joinRoom', { room: roomName });
       setCurrentRoom(roomName);
       setMessages([]);
+      // Reset pagination state
+      setHasMore(true);
+      setNextCursor(null);
+      setIsLoadingMore(false);
+      setCurrentRoomId(roomName);
       // Clear unread count for the room we're switching to
       setUnreadCounts(prev => ({
         ...prev,
@@ -348,6 +365,45 @@ const ChatPage = () => {
   const openPrivateModal = (recipient) => {
     setPrivateRecipient(recipient);
     setShowPrivateModal(true);
+  };
+  
+  const loadMoreMessages = async () => {
+    if (!currentRoomId || isLoadingMore || !hasMore) return;
+    
+    setIsLoadingMore(true);
+    
+    try {
+      const queryParams = new URLSearchParams({
+        limit: '30'
+      });
+      
+      if (nextCursor) {
+        queryParams.append('before', nextCursor);
+      }
+      
+      const response = await fetch(`http://localhost:5000/api/messages/${currentRoomId}?${queryParams}`);
+      
+      if (!response.ok) {
+        throw new Error('Failed to load more messages');
+      }
+      
+      const data = await response.json();
+      
+      // Prepend older messages to the list
+      setMessages(prev => {
+        const newMessages = data.messages.filter(msg => 
+          !prev.some(existingMsg => existingMsg.id === msg.id)
+        );
+        return [...newMessages, ...prev];
+      });
+      
+      setHasMore(data.hasMore);
+      setNextCursor(data.nextCursor);
+    } catch (error) {
+      console.error('Error loading more messages:', error);
+    } finally {
+      setIsLoadingMore(false);
+    }
   };
   
   const leaveChat = () => {
@@ -477,6 +533,19 @@ const ChatPage = () => {
           {/* Dark Mode Toggle */}
           <DarkModeToggle />
 
+          {/* Profile Button */}
+          <button
+            onClick={() => navigate('/profile')}
+            className="flex items-center space-x-1 px-3 py-1 text-xs text-slate-400 hover:text-white hover:bg-slate-700 rounded-lg transition-colors"
+            title="View Profile"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              <circle cx="12" cy="7" r="4" stroke="currentColor" strokeWidth="2"/>
+            </svg>
+            <span className="hidden md:inline">Profile</span>
+          </button>
+
           {/* Clear History Button - Desktop only */}
           <button
             onClick={() => {
@@ -563,29 +632,18 @@ const ChatPage = () => {
             </div>
           ) : (
             // Messages
-            <div className="space-y-3">
-              {messages.map((message, index) => (
-                <div
-                  key={message.id || index}
-                  className={`flex ${message.username === user.username ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                    message.username === user.username
-                      ? 'bg-violet-600 text-white'
-                      : message.username === 'ChatBot'
-                      ? 'bg-slate-700 text-slate-300 dark:bg-slate-600 dark:text-slate-300'
-                      : 'bg-slate-800 text-white dark:bg-slate-700 dark:text-white'
-                  }`}>
-                    {message.username !== user.username && (
-                      <p className="text-xs text-slate-400 dark:text-slate-300 mb-1">{message.username}</p>
-                    )}
-                    <p className="text-sm">{message.text}</p>
-                    <p className="text-xs text-slate-400 dark:text-slate-300 mt-1">{message.time}</p>
-                  </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+            <MessageList
+              messages={messages}
+              currentUser={user.username}
+              roomId={currentRoom}
+              onLoadMore={loadMoreMessages}
+              hasMore={hasMore}
+              isLoading={isLoadingMore}
+              onReaction={handleReaction}
+              onReply={handleReply}
+              threadMessages={threadMessages}
+              userProfiles={userProfiles}
+            />
           )}
         </div>
         
@@ -711,6 +769,18 @@ const ChatPage = () => {
             </form>
           </div>
         </div>
+      )}
+      
+      {/* Thread Panel */}
+      {showThreadPanel && selectedThreadMessage && (
+        <ThreadPanel
+          isOpen={showThreadPanel}
+          onClose={handleCloseThreadPanel}
+          originalMessage={selectedThreadMessage}
+          currentUser={user.username}
+          socket={socket}
+          onlineUsers={onlineUsers}
+        />
       )}
     </div>
   );

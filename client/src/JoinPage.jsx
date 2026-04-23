@@ -1,36 +1,36 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import io from 'socket.io-client';
+import { useAuth } from './contexts/AuthContext';
 
 const JoinPage = () => {
   const [username, setUsername] = useState('');
   const [room, setRoom] = useState('');
   const [error, setError] = useState('');
   const [isJoining, setIsJoining] = useState(false);
-  const [socket, setSocket] = useState(null);
+  const { login, socket } = useAuth();
   
   const navigate = useNavigate();
   
   const suggestedRooms = ['General', 'Tech', 'Gaming', 'Music'];
   
   useEffect(() => {
-    const newSocket = io('http://localhost:5000');
-    setSocket(newSocket);
+    if (!socket) return;
     
-    newSocket.on('usernameTaken', (data) => {
+    socket.on('usernameTaken', (data) => {
       setError(data.message || 'Username is already taken in this room');
       setIsJoining(false);
     });
     
-    newSocket.on('error', (data) => {
+    socket.on('error', (data) => {
       setError(data.message || 'An error occurred');
       setIsJoining(false);
     });
     
     return () => {
-      newSocket.disconnect();
+      socket.off('usernameTaken');
+      socket.off('error');
     };
-  }, []);
+  }, [socket]);
   
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -49,11 +49,15 @@ const JoinPage = () => {
     setError('');
     
     if (socket) {
-      // Store user data in localStorage for ChatPage to use
-      localStorage.setItem('chatUser', JSON.stringify({
+      // Create user object with unique ID
+      const userData = {
+        id: socket.id,
         username: username.trim(),
         room: room.trim()
-      }));
+      };
+      
+      // Login using AuthContext
+      login(userData);
       
       // Join the room
       socket.emit('joinRoom', {

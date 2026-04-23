@@ -19,8 +19,12 @@
   "license": "ISC",
   "dependencies": {
     "@tailwindcss/postcss": "^4.2.4",
+    "dompurify": "^3.4.1",
+    "highlight.js": "^11.11.1",
+    "marked": "^18.0.2",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.14.2",
     "socket.io-client": "^4.8.3"
   },

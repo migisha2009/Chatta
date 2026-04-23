@@ -105,3 +105,9 @@ temp/
 
 # Local development
 .local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+server/chatta.db
