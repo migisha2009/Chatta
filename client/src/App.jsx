@@ -7,7 +7,9 @@ import RegisterPage from './RegisterPage.jsx';
 import JoinPage from './JoinPage.jsx';
 import ChatPage from './ChatPage.jsx';
 import ProfilePage from './ProfilePage.jsx';
+import AdminDashboard from './components/AdminDashboard.jsx';
 import ErrorBoundary from './components/ErrorBoundary.jsx';
+import MobileLayout from './components/MobileLayout.jsx';
 
 // Protected route component
 const ProtectedRoute = ({ children }) => {
@@ -49,7 +51,7 @@ function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <div className="min-h-screen bg-gray-100 dark:bg-gray-900">
+        <MobileLayout>
           <Routes>
             {/* Public routes - redirect to chat if authenticated */}
             <Route path="/login" element={
@@ -79,13 +81,18 @@ function App() {
                 <JoinPage />
               </ProtectedRoute>
             } />
+            <Route path="/admin" element={
+              <ProtectedRoute>
+                <AdminDashboard />
+              </ProtectedRoute>
+            } />
             
             {/* Default routes */}
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>
           <Toaster position="top-right" />
-        </div>
+        </MobileLayout>
       </AuthProvider>
     </ErrorBoundary>
   );

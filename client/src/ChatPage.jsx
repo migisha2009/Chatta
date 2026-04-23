@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import DarkModeToggle from './components/DarkModeToggle';
 import MessageList from './components/MessageList';
 import ThreadPanel from './components/ThreadPanel';
+import Onboarding from './components/Onboarding';
 import { useAuth } from './contexts/AuthContext';
 
 const ChatPage = () => {
@@ -26,6 +27,7 @@ const ChatPage = () => {
   const [rateLimited, setRateLimited] = useState(false);
   const [rateLimitMessage, setRateLimitMessage] = useState('');
   const [userProfiles, setUserProfiles] = useState({});
+  const [showOnboarding, setShowOnboarding] = useState(true);
   
   // Thread state
   const [showThreadPanel, setShowThreadPanel] = useState(false);
@@ -413,8 +415,19 @@ const ChatPage = () => {
   
   if (!user) return null;
   
+  const handleOnboardingComplete = () => {
+    setShowOnboarding(false);
+  };
+  
   return (
     <div className="flex h-screen bg-slate-900 text-white">
+      {/* Onboarding Overlay */}
+      {showOnboarding && (
+        <Onboarding 
+          onComplete={handleOnboardingComplete} 
+          user={user} 
+        />
+      )}
       {/* Mobile Menu Overlay */}
       {showMobileMenu && (
         <div 

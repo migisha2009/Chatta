@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { renderMessage } from '../utils/renderMessage';
+import VoiceRecorder from './VoiceRecorder';
 
 const MessageInput = ({ onSendMessage, disabled = false, placeholder = "Type a message...", socket, currentRoom }) => {
   const [message, setMessage] = useState('');
@@ -9,11 +10,30 @@ const MessageInput = ({ onSendMessage, disabled = false, placeholder = "Type a m
   const [isUploading, setIsUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [voiceRecording, setVoiceRecording] = useState(null);
   const textareaRef = useRef(null);
   const emojiPickerRef = useRef(null);
   const fileInputRef = useRef(null);
   const typingTimeoutRef = useRef(null);
   const isTypingRef = useRef(false);
+
+  // Handle voice recording completion
+  const handleVoiceRecording = (recording) => {
+    setVoiceRecording(recording);
+  };
+
+  // Send voice message
+  const sendVoiceMessage = () => {
+    if (voiceRecording && onSendMessage) {
+      onSendMessage({
+        type: 'voice',
+        audio: voiceRecording.base64,
+        duration: voiceRecording.duration,
+        blob: voiceRecording.blob
+      });
+      setVoiceRecording(null);
+    }
+  };
 
   // 20 common emojis
   const emojis = [
@@ -537,10 +557,36 @@ const MessageInput = ({ onSendMessage, disabled = false, placeholder = "Type a m
             </div>
           )}
 
+          {/* Voice Recorder */}
+          <VoiceRecorder 
+            onRecordingComplete={handleVoiceRecording}
+            disabled={disabled || isUploading}
+          />
+
+          {/* Send Voice Message Button */}
+          {voiceRecording && (
+            <button
+              type="button"
+              onClick={sendVoiceMessage}
+              className="px-3 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center space-x-2"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M22 2L11 13M22 2L15 22L11 13L2 9L22 2Z"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span>Send Voice</span>
+            </button>
+          )}
+
           {/* Send Button */}
           <button
             type="submit"
-            disabled={(!message.trim() && attachments.length === 0) || disabled || characterCount > maxCharacters || isUploading}
+            disabled={(!message.trim() && attachments.length === 0 && !voiceRecording) || disabled || characterCount > maxCharacters || isUploading}
             className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors flex items-center space-x-2"
           >
             <span>{isUploading ? 'Uploading...' : 'Send'}</span>

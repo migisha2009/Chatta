@@ -15,6 +15,15 @@ const userStore = require('./auth/userStore');
 const { authenticateToken, authenticateSocket, generateToken } = require('./middleware/auth');
 const ChattaBot = require('./services/chattaBot');
 const {
+  securityMiddleware,
+  createLogger,
+  requestLogger,
+  errorHandler,
+  securityHeaders,
+  validateInput,
+  corsOptions
+} = require('./middleware/security');
+const {
   initializeDatabase,
   createUser,
   findUserByEmail,
@@ -42,6 +51,20 @@ const app = express();
 const server = http.createServer(app);
 const clientUrl = process.env.CLIENT_URL || "http://localhost:5173";
 
+// Initialize logger
+const logger = createLogger();
+
+// Create logs directory if it doesn't exist
+if (!fs.existsSync('logs')) {
+  fs.mkdirSync('logs');
+}
+
+// Apply security middleware
+securityMiddleware(app);
+app.use(securityHeaders);
+app.use(validateInput);
+app.use(requestLogger(logger));
+
 const io = socketIo(server, {
   cors: {
     origin: clientUrl,
@@ -49,10 +72,7 @@ const io = socketIo(server, {
   }
 });
 
-app.use(cors({
-  origin: clientUrl,
-  credentials: true
-}));
+app.use(cors(corsOptions));
 app.use(express.json());
 
 // Serve static files from uploads directory
@@ -346,9 +366,17 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Support both string text and object with text and attachments
-      const text = typeof data === 'string' ? data : data.text;
+      // Support different message types
+      const messageType = data.type || 'chat';
+      let text = typeof data === 'string' ? data : data.text;
       const attachments = typeof data === 'object' && data.attachments ? data.attachments : [];
+      let audioData = null;
+      
+      // Handle voice messages
+      if (messageType === 'voice' && data.audio) {
+        audioData = data.audio;
+        text = `[Voice message - ${data.duration}s]`;
+      }
 
       // Check rate limiting
       if (!checkRateLimit(socket.id)) {
@@ -371,7 +399,8 @@ io.on('connection', (socket) => {
         room_id: user.roomId,
         user_id: user.userId,
         text: sanitizedText,
-        type: 'chat'
+        type: messageType,
+        audio: audioData
       });
 
       const message = {
@@ -380,7 +409,10 @@ io.on('connection', (socket) => {
         text: sanitizedText,
         time: new Date(savedMessage.created_at * 1000).toLocaleTimeString(),
         avatar: user.avatar,
-        attachments: attachments
+        attachments: attachments,
+        type: messageType,
+        audio: audioData,
+        duration: data.duration || null
       };
       
       // Increment user message count
@@ -1025,6 +1057,106 @@ app.get('/api/search/suggestions', (req, res) => {
   }
 });
 
+// Admin Dashboard Endpoints
+
+// GET /api/admin/stats - get dashboard statistics
+app.get('/api/admin/stats', (req, res) => {
+  try {
+    const stats = {
+      totalUsers: db.prepare('SELECT COUNT(*) as count FROM users').get().count,
+      totalRooms: db.prepare('SELECT COUNT(*) as count FROM rooms').get().count,
+      totalMessages: db.prepare('SELECT COUNT(*) as count FROM messages').get().count,
+      activeUsers: new Set(onlineUsers.values()).size,
+      onlineUsers: Object.keys(onlineUsers).length,
+      bannedUsers: db.prepare('SELECT COUNT(*) as count FROM banned_users WHERE expires_at IS NULL OR expires_at > ?').get(Date.now()).count,
+      reports: db.prepare('SELECT COUNT(*) as count FROM message_reports WHERE status = "pending"').get().count,
+      moderatedMessages: db.prepare('SELECT COUNT(*) as count FROM messages WHERE type = "deleted"').get().count
+    };
+    
+    res.json(stats);
+  } catch (error) {
+    console.error('Error fetching admin stats:', error);
+    res.status(500).json({ error: 'Failed to fetch statistics' });
+  }
+});
+
+// GET /api/admin/charts - get chart data
+app.get('/api/admin/charts', (req, res) => {
+  try {
+    const { range = '7d' } = req.query;
+    
+    // User growth data
+    const userGrowth = [];
+    for (let i = 6; i >= 0; i--) {
+      const date = new Date();
+      date.setDate(date.getDate() - i);
+      const dateStr = date.toISOString().split('T')[0];
+      const count = db.prepare('SELECT COUNT(*) as count FROM users WHERE DATE(created_at / 86400, "unixepoch") = ?').get(dateStr).count;
+      userGrowth.push({ date: dateStr, users: count });
+    }
+
+    // Message activity by hour
+    const messageActivity = [];
+    for (let hour = 0; hour < 24; hour++) {
+      const count = db.prepare('SELECT COUNT(*) as count FROM messages WHERE strftime("%H", created_at, "unixepoch") = ?').get(hour.toString()).count;
+      messageActivity.push({ hour: `${hour}:00`, messages: count });
+    }
+
+    // Room distribution
+    const roomDistribution = [
+      { name: 'Public', value: db.prepare('SELECT COUNT(*) as count FROM rooms WHERE type = "public"').get().count },
+      { name: 'Private', value: db.prepare('SELECT COUNT(*) as count FROM rooms WHERE type = "private"').get().count },
+      { name: 'Protected', value: db.prepare('SELECT COUNT(*) as count FROM rooms WHERE type = "protected"').get().count }
+    ];
+
+    // Top users
+    const topUsers = db.prepare(`
+      SELECT u.id, u.username, COUNT(m.id) as messages, 
+             strftime("%Y-%m-%d", u.created_at, "unixepoch") as joined
+      FROM users u
+      LEFT JOIN messages m ON u.id = m.user_id
+      GROUP BY u.id
+      ORDER BY messages DESC
+      LIMIT 10
+    `).all();
+
+    res.json({
+      userGrowth,
+      messageActivity,
+      roomDistribution,
+      topUsers
+    });
+  } catch (error) {
+    console.error('Error fetching chart data:', error);
+    res.status(500).json({ error: 'Failed to fetch chart data' });
+  }
+});
+
+// GET /api/admin/reports - get moderation reports
+app.get('/api/admin/reports', (req, res) => {
+  try {
+    const reports = getMessageReports();
+    res.json(reports);
+  } catch (error) {
+    console.error('Error fetching reports:', error);
+    res.status(500).json({ error: 'Failed to fetch reports' });
+  }
+});
+
+// POST /api/admin/reports/:id/review - review a report
+app.post('/api/admin/reports/:id/review', (req, res) => {
+  try {
+    const { status } = req.body;
+    const reportId = req.params.id;
+    
+    updateReportStatus(reportId, status, 'admin');
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error reviewing report:', error);
+    res.status(500).json({ error: 'Failed to review report' });
+  }
+});
+
 // POST /api/rooms/:roomId/summarize - get AI summary of room
 app.post('/api/rooms/:roomId/summarize', async (req, res) => {
   try {
@@ -1088,20 +1220,18 @@ app.post('/api/upload', fileUpload.array('files', 5), (req, res) => {
   }
 });
 
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
-});
-
 // Initialize database
 initializeDatabase();
 
 // 404 handler
-app.use((req, res) => {
+app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
+// Error handler middleware
+app.use(errorHandler(logger));
+
 server.listen(PORT, () => {
+  logger.info(`Server running on port ${PORT}`);
   console.log(`Server running on port ${PORT}`);
 });

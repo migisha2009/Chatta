@@ -1,5 +1,6 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import Message from './Message';
+import VirtualizedMessageList from './VirtualizedMessageList';
 
 const MessageList = ({ messages, currentUser, isPrivate = false, roomId, onLoadMore, hasMore, isLoading, userProfiles = {}, onReaction, onReply, threadMessages = [] }) => {
   const messagesEndRef = useRef(null);
@@ -7,6 +8,12 @@ const MessageList = ({ messages, currentUser, isPrivate = false, roomId, onLoadM
   const containerRef = useRef(null);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const [useVirtualScroll, setUseVirtualScroll] = useState(false);
+
+  // Enable virtual scrolling for large message lists
+  useEffect(() => {
+    setUseVirtualScroll(messages.length > 100);
+  }, [messages.length]);
 
   // Auto-scroll to bottom when new messages arrive (only if at bottom)
   const scrollToBottom = useCallback(() => {
@@ -122,6 +129,24 @@ const MessageList = ({ messages, currentUser, isPrivate = false, roomId, onLoadM
           </p>
         </div>
       </div>
+    );
+  }
+
+  // Use virtual scrolling for large message lists
+  if (useVirtualScroll) {
+    return (
+      <VirtualizedMessageList
+        messages={messages}
+        currentUser={currentUser}
+        userProfiles={userProfiles}
+        onReaction={onReaction}
+        onReply={onReply}
+        threadMessages={threadMessages}
+        onLoadMore={onLoadMore}
+        hasMore={hasMore}
+        isLoadingMore={isLoading}
+        messageListRef={containerRef}
+      />
     );
   }
 
